@@ -1,1 +1,1 @@
-# AIChallenge
+잡코리아 AI Challenge
