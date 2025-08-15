@@ -14,7 +14,7 @@ public class ViewController {
 
     @GetMapping("/")
     public String home() {
-        return "index"; // /WEB-INF/jsp/index.jsp 로 이동
+        return "ai"; // /WEB-INF/jsp/ai.jsp 로 이동
     }
 
 }

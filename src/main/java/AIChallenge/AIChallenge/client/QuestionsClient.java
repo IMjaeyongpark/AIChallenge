@@ -17,7 +17,7 @@ import java.util.stream.Collectors;
 
 @Component
 @RequiredArgsConstructor
-public class AiClient {
+public class QuestionsClient {
 
     @Value("${gemini.api.key}")
     private String apiKey;
@@ -31,7 +31,7 @@ public class AiClient {
 
     public AiResponse callAiApi(AiRequest request) {
         // 1) 프롬프트 렌더
-        String prompt = promptLoader.loadTemplate()
+        String prompt = promptLoader.loadQuestionsPrompt()
                 .replace("{{targetRole}}", request.getTargetRole())
                 .replace("{{count}}", String.valueOf(request.getCount()))
                 .replace("{{resume}}", request.getResume())
