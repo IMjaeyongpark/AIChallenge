@@ -12,7 +12,7 @@ import java.util.List;
 @Service
 @Slf4j
 @RequiredArgsConstructor
-public class AIService {
+public class QuestionsService {
     private final QuestionsClient aiClient; // 외부 AI API 호출 전용
 
 
