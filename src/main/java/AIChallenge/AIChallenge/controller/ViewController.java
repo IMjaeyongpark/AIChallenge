@@ -11,6 +11,7 @@ import org.springframework.web.bind.annotation.GetMapping;
 @RequiredArgsConstructor
 public class ViewController {
 
+    // 기본 페이지 요청 처리
     @GetMapping("/")
     public String home() {
         return "ai"; // /WEB-INF/jsp/ai.jsp 로 이동

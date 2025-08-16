@@ -15,10 +15,15 @@ public class LearningService {
 
     private final LearningClient learningClient;
 
+    // AI 학습 경로 생성 메서드
     public AiResponse generate(AiRequest request, Integer weeks, Integer hoursPerWeek) {
         int w = (weeks == null || weeks <= 0) ? 6 : weeks;
         int h = (hoursPerWeek == null || hoursPerWeek <= 0) ? 8 : hoursPerWeek;
-        // LearningClient는 AiResponse를 반환하도록 이미 변경됨
+
         return learningClient.suggest(request, w, h);
+    }
+
+    public AiResponse chat(AiRequest req) {
+        return learningClient.chat(req);
     }
 }

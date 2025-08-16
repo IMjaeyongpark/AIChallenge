@@ -12,6 +12,7 @@ import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.stereotype.Component;
 import org.springframework.web.reactive.function.client.WebClient;
+import org.springframework.web.reactive.function.client.WebClientResponseException;
 
 import java.time.Duration;
 import java.util.*;
@@ -170,4 +171,76 @@ public class LearningClient {
     }
 
     private static String nullSafe(String s) { return s == null ? "" : s; }
+
+    public AiResponse chat(AiRequest request) {
+        // 질문이 없으면 방어
+        if (request.getQuestion() == null || request.getQuestion().isBlank()) {
+            return AiResponse.builder()
+                    .questions(List.of("질문을 입력해 주세요."))
+                    .build();
+        }
+
+        // 프롬프트: 이력서/직무/스택 + 사용자 질문 기반의 짧은 코칭
+        String prompt = """
+                당신은 시니어 %s 멘토입니다.
+                아래 지원자의 이력과 기술 스택, 그리고 사용자의 질문을 바탕으로
+                학습 경로/커리어 관점에서 실용적인 조언을 한국어로 3~6줄 내로 제시하세요.
+                - 가능한 한 구체적인 액션아이템과 우선순위를 포함하세요.
+                - 너무 장황한 설명은 피하고, 바로 실행 가능한 형태로 답변하세요.
+
+                [지원자 이력 요약]
+                %s
+
+                [기술 스택]
+                %s
+
+                [사용자 질문]
+                %s
+                """.formatted(
+                nullSafe(request.getTargetRole()),
+                nullSafe(request.getResume()),
+                String.join(", ", Optional.ofNullable(request.getTechStack()).orElse(List.of())),
+                nullSafe(request.getQuestion())
+        );
+
+        Map<String, Object> body = Map.of(
+                "contents", List.of(Map.of("parts", List.of(Map.of("text", prompt))))
+        );
+
+        Map<String, Object> result;
+        try {
+            // Gemini 호출
+            // (간단 답변이라 response_mime_type은 텍스트로 받습니다. 필요하면 JSON 강제도 가능)
+            // 응답 포맷이 자주 바뀐다면 generationConfig에 "response_mime_type":"application/json" 추가 + JSON 파싱으로 전환하세요.
+            // 여기서는 라인 분리로 안전하게 처리합니다.
+            //noinspection unchecked
+            result = webClient.post()
+                    .uri("/models/gemini-1.5-flash-latest:generateContent?key=" + apiKey)
+                    .bodyValue(body)
+                    .retrieve()
+                    .bodyToMono(Map.class)
+                    .timeout(Duration.ofSeconds(20))
+                    .block();
+        } catch (WebClientResponseException e) {
+            return AiResponse.builder()
+                    .questions(List.of("AI 호출 실패: HTTP %d %s".formatted(e.getRawStatusCode(), e.getStatusText())))
+                    .build();
+        } catch (Exception e) {
+            return AiResponse.builder()
+                    .questions(List.of("AI 호출 실패: " + e.getMessage()))
+                    .build();
+        }
+
+        String text = extractText(result);
+        List<String> lines = (text == null ? "" : text).lines()
+                .map(String::trim)
+                .filter(s -> !s.isBlank())
+                .toList();
+
+        if (lines.isEmpty()) {
+            lines = List.of("답변이 비어 있습니다. 입력 내용을 다시 확인해 주세요.");
+        }
+        return AiResponse.builder().questions(lines).build();
+    }
+
 }

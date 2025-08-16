@@ -16,8 +16,8 @@ public class QuestionsService {
     private final QuestionsClient aiClient; // 외부 AI API 호출 전용
 
 
+    // AI 질문 생성 메서드
     public AiResponse generate(AiRequest request) {
-        // 여기서 입력 검증 가능
         if (request.getCount() <= 0) {
             return AiResponse.builder()
                     .questions(List.of("count는 1 이상이어야 합니다."))
