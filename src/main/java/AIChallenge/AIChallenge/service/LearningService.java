@@ -24,6 +24,7 @@ public class LearningService {
     }
 
     public AiResponse chat(AiRequest req) {
+        log.info("채팅임: question='{}'", req.getQuestion());
         return learningClient.chat(req);
     }
 }

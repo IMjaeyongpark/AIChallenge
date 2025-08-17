@@ -27,6 +27,7 @@ public class LearningClient {
     @Value("${gemini.api.key}")
     private String apiKey;
 
+    // 타임아웃/헤더는 builder에서 설정
     private final WebClient webClient = WebClient.builder()
             .baseUrl("https://generativelanguage.googleapis.com/v1beta")
             .defaultHeader(HttpHeaders.CONTENT_TYPE, MediaType.APPLICATION_JSON_VALUE)
@@ -40,7 +41,8 @@ public class LearningClient {
         String tpl = promptLoader.loadLearningPrompt();
         String prompt = tpl
                 .replace("{role}", nullSafe(req.getTargetRole()))
-                .replace("{techStack}", String.join(", ", Optional.ofNullable(req.getTechStack()).orElse(List.of())))
+                .replace("{techStack}", String.join(", ",
+                        Optional.ofNullable(req.getTechStack()).orElse(List.of())))
                 .replace("{resume}", nullSafe(req.getResume()))
                 .replace("{weeks}", String.valueOf(weeks))
                 .replace("{hoursPerWeek}", String.valueOf(hoursPerWeek));
@@ -50,13 +52,25 @@ public class LearningClient {
                 "generationConfig", Map.of("response_mime_type", "application/json")
         );
 
-        Map<String, Object> result = webClient.post()
-                .uri("/models/gemini-1.5-flash-latest:generateContent?key=" + apiKey)
-                .bodyValue(body)
-                .retrieve()
-                .bodyToMono(Map.class)   // ✅ Class<T>
-                .timeout(Duration.ofSeconds(25))
-                .block();
+        Map<String, Object> result;
+        try {
+            result = webClient.post()
+                    .uri("/models/gemini-1.5-flash-latest:generateContent?key=" + apiKey)
+                    .bodyValue(body)
+                    .retrieve()
+                    .bodyToMono(Map.class)
+                    .timeout(Duration.ofSeconds(25))
+                    .block();
+        } catch (WebClientResponseException e) {
+            return AiResponse.builder()
+                    .questions(List.of("AI 호출 실패: HTTP %d %s".formatted(
+                            e.getRawStatusCode(), e.getStatusText())))
+                    .build();
+        } catch (Exception e) {
+            return AiResponse.builder()
+                    .questions(List.of("AI 호출 실패: " + e.getMessage()))
+                    .build();
+        }
 
         String json = extractText(result);
         List<String> lines = extractLinesFromJson(json);
@@ -74,14 +88,71 @@ public class LearningClient {
         return AiResponse.builder().questions(lines).build();
     }
 
+    public AiResponse chat(AiRequest request) {
+        // 질문이 없으면 방어
+        if (request.getQuestion() == null || request.getQuestion().isBlank()) {
+            return AiResponse.builder()
+                    .questions(List.of("질문을 입력해 주세요."))
+                    .build();
+        }
+
+        // 프롬프트: 이력서/직무/스택 + 사용자 질문 기반의 짧은 코칭
+        String prompt = promptLoader.loadLearningChatPrompt().formatted(
+                nullSafe(request.getTargetRole()),
+                nullSafe(request.getResume()),
+                String.join(", ",
+                        Optional.ofNullable(request.getTechStack()).orElse(List.of())),
+                nullSafe(request.getQuestion())
+        );
+
+        Map<String, Object> body = Map.of(
+                "contents", List.of(Map.of("parts", List.of(Map.of("text", prompt))))
+        );
+
+        Map<String, Object> result;
+        try {
+            result = webClient.post()
+                    .uri("/models/gemini-1.5-flash-latest:generateContent?key=" + apiKey)
+                    .bodyValue(body)
+                    .retrieve()
+                    .bodyToMono(Map.class)
+                    .timeout(Duration.ofSeconds(20))
+                    .block();
+        } catch (WebClientResponseException e) {
+            return AiResponse.builder()
+                    .questions(List.of("AI 호출 실패: HTTP %d %s".formatted(
+                            e.getRawStatusCode(), e.getStatusText())))
+                    .build();
+        } catch (Exception e) {
+            return AiResponse.builder()
+                    .questions(List.of("AI 호출 실패: " + e.getMessage()))
+                    .build();
+        }
+
+        String text = extractText(result);
+        List<String> lines = (text == null ? "" : text).lines()
+                .map(String::trim)
+                .filter(s -> !s.isBlank())
+                .toList();
+
+        if (lines.isEmpty()) {
+            lines = List.of("답변이 비어 있습니다. 입력 내용을 다시 확인해 주세요.");
+        }
+        return AiResponse.builder().questions(lines).build();
+    }
+
     // --------- Helpers ---------
 
     @SuppressWarnings("unchecked")
     private String extractText(Map<String, Object> result) {
+        if (result == null) return "";
         try {
             var candidates = (List<Map<String, Object>>) result.get("candidates");
+            if (candidates == null || candidates.isEmpty()) return "";
             var content = (Map<String, Object>) candidates.get(0).get("content");
+            if (content == null) return "";
             var parts = (List<Map<String, Object>>) content.get("parts");
+            if (parts == null || parts.isEmpty()) return "";
             return (String) parts.get(0).get("text");
         } catch (Exception e) {
             return "";
@@ -105,7 +176,8 @@ public class LearningClient {
             // KPIs
             Object kpisObj = root.get("kpis");
             if (kpisObj instanceof List<?> kpis && !kpis.isEmpty()) {
-                String k = kpis.stream().map(Object::toString).collect(Collectors.joining(", "));
+                String k = kpis.stream().map(Object::toString)
+                        .collect(Collectors.joining(", "));
                 out.add("KPI: " + k);
             }
 
@@ -158,89 +230,23 @@ public class LearningClient {
         if (o == null) return null;
         try {
             return (o instanceof Number n) ? n.intValue() : Integer.parseInt(o.toString());
-        } catch (Exception ignored) { return null; }
+        } catch (Exception ignored) {
+            return null;
+        }
     }
 
     @SuppressWarnings("unchecked")
     private static String joinList(Object obj) {
         if (obj instanceof List<?> list && !list.isEmpty()) {
-            return list.stream().filter(Objects::nonNull).map(Object::toString)
-                    .map(String::trim).filter(s -> !s.isBlank()).collect(Collectors.joining(", "));
+            return list.stream()
+                    .filter(Objects::nonNull)
+                    .map(Object::toString)
+                    .map(String::trim)
+                    .filter(s -> !s.isBlank())
+                    .collect(Collectors.joining(", "));
         }
         return "";
     }
 
     private static String nullSafe(String s) { return s == null ? "" : s; }
-
-    public AiResponse chat(AiRequest request) {
-        // 질문이 없으면 방어
-        if (request.getQuestion() == null || request.getQuestion().isBlank()) {
-            return AiResponse.builder()
-                    .questions(List.of("질문을 입력해 주세요."))
-                    .build();
-        }
-
-        // 프롬프트: 이력서/직무/스택 + 사용자 질문 기반의 짧은 코칭
-        String prompt = """
-                당신은 시니어 %s 멘토입니다.
-                아래 지원자의 이력과 기술 스택, 그리고 사용자의 질문을 바탕으로
-                학습 경로/커리어 관점에서 실용적인 조언을 한국어로 3~6줄 내로 제시하세요.
-                - 가능한 한 구체적인 액션아이템과 우선순위를 포함하세요.
-                - 너무 장황한 설명은 피하고, 바로 실행 가능한 형태로 답변하세요.
-
-                [지원자 이력 요약]
-                %s
-
-                [기술 스택]
-                %s
-
-                [사용자 질문]
-                %s
-                """.formatted(
-                nullSafe(request.getTargetRole()),
-                nullSafe(request.getResume()),
-                String.join(", ", Optional.ofNullable(request.getTechStack()).orElse(List.of())),
-                nullSafe(request.getQuestion())
-        );
-
-        Map<String, Object> body = Map.of(
-                "contents", List.of(Map.of("parts", List.of(Map.of("text", prompt))))
-        );
-
-        Map<String, Object> result;
-        try {
-            // Gemini 호출
-            // (간단 답변이라 response_mime_type은 텍스트로 받습니다. 필요하면 JSON 강제도 가능)
-            // 응답 포맷이 자주 바뀐다면 generationConfig에 "response_mime_type":"application/json" 추가 + JSON 파싱으로 전환하세요.
-            // 여기서는 라인 분리로 안전하게 처리합니다.
-            //noinspection unchecked
-            result = webClient.post()
-                    .uri("/models/gemini-1.5-flash-latest:generateContent?key=" + apiKey)
-                    .bodyValue(body)
-                    .retrieve()
-                    .bodyToMono(Map.class)
-                    .timeout(Duration.ofSeconds(20))
-                    .block();
-        } catch (WebClientResponseException e) {
-            return AiResponse.builder()
-                    .questions(List.of("AI 호출 실패: HTTP %d %s".formatted(e.getRawStatusCode(), e.getStatusText())))
-                    .build();
-        } catch (Exception e) {
-            return AiResponse.builder()
-                    .questions(List.of("AI 호출 실패: " + e.getMessage()))
-                    .build();
-        }
-
-        String text = extractText(result);
-        List<String> lines = (text == null ? "" : text).lines()
-                .map(String::trim)
-                .filter(s -> !s.isBlank())
-                .toList();
-
-        if (lines.isEmpty()) {
-            lines = List.of("답변이 비어 있습니다. 입력 내용을 다시 확인해 주세요.");
-        }
-        return AiResponse.builder().questions(lines).build();
-    }
-
 }

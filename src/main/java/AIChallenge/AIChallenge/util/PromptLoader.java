@@ -16,8 +16,11 @@ public class PromptLoader {
     @Value("${prompts.questions-template:prompts/interview_questions_ko.txt}")
     private String questionsTemplatePath;
 
-    @Value("${prompts.learning-template:prompts/learning-path_ko.txt}")
+    @Value("${prompts.learning-template:prompts/learning_path_ko.txt}")
     private String learningTemplatePath;
+
+    @Value("${prompts.learning-chat-template:prompts/learning_chat_ko.txt}")
+    private String learningChatTemplatePath;
 
     private final Map<String, String> cache = new ConcurrentHashMap<>();
 
@@ -27,6 +30,10 @@ public class PromptLoader {
 
     public String loadLearningPrompt() {
         return loadTemplate(learningTemplatePath);
+    }
+
+    public String loadLearningChatPrompt() {
+        return loadTemplate(learningChatTemplatePath);
     }
 
     public String loadTemplate(String path) {

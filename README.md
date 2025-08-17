@@ -244,5 +244,3 @@ java -jar build/libs/AIChallenge-*.jar
 
 * 이 레포 이슈 트래커 또는 커밋 메시지/PR로 기록
 * 프롬프트/모델/토큰 정책 변경 시 README 업데이트 권장
-
-행운을 빕니다! 🚀
