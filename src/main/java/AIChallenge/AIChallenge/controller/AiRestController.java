@@ -13,7 +13,6 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
 
-// API 엔드포인트는 /api/v1/ai/questions와 /api/v1/ai/learning-path로 설정됨
 @RestController
 @RequestMapping("/api/v1/ai")
 @Slf4j

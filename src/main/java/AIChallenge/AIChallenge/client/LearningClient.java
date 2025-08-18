@@ -23,11 +23,11 @@ import java.util.stream.Collectors;
 public class LearningClient {
 
     private final PromptLoader promptLoader;
+    private final ConversationMemory memory;
 
     @Value("${gemini.api.key}")
     private String apiKey;
 
-    // 타임아웃/헤더는 builder에서 설정
     private final WebClient webClient = WebClient.builder()
             .baseUrl("https://generativelanguage.googleapis.com/v1beta")
             .defaultHeader(HttpHeaders.CONTENT_TYPE, MediaType.APPLICATION_JSON_VALUE)
@@ -36,7 +36,7 @@ public class LearningClient {
     private final ObjectMapper mapper = new ObjectMapper()
             .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, true);
 
-    /** 학습 경로 제안을 받아 AiResponse(문장 리스트)로 반환 */
+    /** 학습 경로 제안 + 대화 세션 시작 */
     public AiResponse suggest(AiRequest req, int weeks, int hoursPerWeek) {
         String tpl = promptLoader.loadLearningPrompt();
         String prompt = tpl
@@ -65,10 +65,12 @@ public class LearningClient {
             return AiResponse.builder()
                     .questions(List.of("AI 호출 실패: HTTP %d %s".formatted(
                             e.getRawStatusCode(), e.getStatusText())))
+                    .conversationId(null)
                     .build();
         } catch (Exception e) {
             return AiResponse.builder()
                     .questions(List.of("AI 호출 실패: " + e.getMessage()))
+                    .conversationId(null)
                     .build();
         }
 
@@ -76,38 +78,78 @@ public class LearningClient {
         List<String> lines = extractLinesFromJson(json);
 
         if (lines.isEmpty()) {
-            // 폴백: 원문 텍스트를 줄 단위로 나눠서 반환
             lines = Optional.ofNullable(json)
-                    .map(t -> t.lines()
-                            .map(String::trim)
-                            .filter(s -> !s.isBlank())
-                            .collect(Collectors.toList()))
+                    .map(t -> t.lines().map(String::trim).filter(s -> !s.isBlank()).collect(Collectors.toList()))
                     .orElse(List.of("학습 경로 응답이 비어 있습니다."));
         }
 
-        return AiResponse.builder().questions(lines).build();
+        // ★ 대화 세션 생성 & 초기 컨텍스트 저장
+        String planSummaryForCtx = String.join("\n", lines);
+        ConversationMemory.Conversation conv = memory.start(planSummaryForCtx);
+        // 초깃값(시스템/어시스턴트 역할 기록)
+        memory.append(conv.getId(), "system", "You are a helpful learning coach.");
+        memory.append(conv.getId(), "assistant", planSummaryForCtx);
+
+        return AiResponse.builder()
+                .questions(lines)
+                .conversationId(conv.getId())   // ★ 프론트에 전달 → 이후 /chat 에서 함께 보냄
+                .build();
     }
 
+    /** 추천된 학습경로 + 이전 대화를 포함해 이어서 코칭 */
     public AiResponse chat(AiRequest request) {
-        // 질문이 없으면 방어
-        if (request.getQuestion() == null || request.getQuestion().isBlank()) {
+        String userMsg = nullSafe(request.getQuestion());
+
+        if (userMsg.isBlank()) {
             return AiResponse.builder()
                     .questions(List.of("질문을 입력해 주세요."))
+                    .conversationId(request.getConversationId())
                     .build();
         }
 
-        // 프롬프트: 이력서/직무/스택 + 사용자 질문 기반의 짧은 코칭
+        // ★ 컨버세이션 로드 (없으면 임시 세션 생성)
+        ConversationMemory.Conversation conv = memory.get(request.getConversationId());
+        if (conv == null) {
+            conv = memory.start(
+                    // 최소 컨텍스트: 이력서/직무/스택로 간단 요약
+                    ("[Ephemeral Session]\n" +
+                            "Role: " + nullSafe(request.getTargetRole()) + "\n" +
+                            "Tech: " + String.join(", ", Optional.ofNullable(request.getTechStack()).orElse(List.of())) + "\n" +
+                            "Resume: " + nullSafe(request.getResume())).trim()
+            );
+            // 시스템 역할 기록
+            memory.append(conv.getId(), "system", "You are a helpful learning coach.");
+        }
+
+        // 프롬프트 구성: planSummary + recent turns + 이번 질문
+        StringBuilder ctx = new StringBuilder();
+        if (conv.getPlanSummary() != null && !conv.getPlanSummary().isBlank()) {
+            ctx.append("### Previously suggested learning path (summary)\n")
+                    .append(conv.getPlanSummary()).append("\n\n");
+        }
+        if (!conv.getRecent().isEmpty()) {
+            ctx.append("### Conversation so far\n");
+            conv.getRecent().forEach(m ->
+                    ctx.append(m.getRole().toUpperCase()).append(": ").append(m.getContent()).append("\n")
+            );
+            ctx.append("\n");
+        }
+
+        // 사용자의 현재 질문 추가
+        ctx.append("### User question\n").append(userMsg).append("\n\n")
+                .append("### Instructions\n")
+                .append("- Answer concretely, referencing the learning path above when relevant.\n")
+                .append("- If suggesting tasks, align them with the weeks/topics already proposed.\n")
+                .append("- Keep answers concise and actionable.\n");
+
         String prompt = promptLoader.loadLearningChatPrompt().formatted(
                 nullSafe(request.getTargetRole()),
                 nullSafe(request.getResume()),
-                String.join(", ",
-                        Optional.ofNullable(request.getTechStack()).orElse(List.of())),
-                nullSafe(request.getQuestion())
+                String.join(", ", Optional.ofNullable(request.getTechStack()).orElse(List.of())),
+                ctx.toString()
         );
 
-        Map<String, Object> body = Map.of(
-                "contents", List.of(Map.of("parts", List.of(Map.of("text", prompt))))
-        );
+        Map<String, Object> body = Map.of("contents", List.of(Map.of("parts", List.of(Map.of("text", prompt)))));
 
         Map<String, Object> result;
         try {
@@ -120,25 +162,32 @@ public class LearningClient {
                     .block();
         } catch (WebClientResponseException e) {
             return AiResponse.builder()
-                    .questions(List.of("AI 호출 실패: HTTP %d %s".formatted(
-                            e.getRawStatusCode(), e.getStatusText())))
+                    .questions(List.of("AI 호출 실패: HTTP %d %s".formatted(e.getRawStatusCode(), e.getStatusText())))
+                    .conversationId(conv.getId())
                     .build();
         } catch (Exception e) {
             return AiResponse.builder()
                     .questions(List.of("AI 호출 실패: " + e.getMessage()))
+                    .conversationId(conv.getId())
                     .build();
         }
 
         String text = extractText(result);
         List<String> lines = (text == null ? "" : text).lines()
-                .map(String::trim)
-                .filter(s -> !s.isBlank())
-                .toList();
+                .map(String::trim).filter(s -> !s.isBlank()).toList();
 
         if (lines.isEmpty()) {
             lines = List.of("답변이 비어 있습니다. 입력 내용을 다시 확인해 주세요.");
         }
-        return AiResponse.builder().questions(lines).build();
+
+        // ★ 히스토리 반영
+        memory.append(conv.getId(), "user", userMsg);
+        memory.append(conv.getId(), "assistant", String.join("\n", lines));
+
+        return AiResponse.builder()
+                .questions(lines)
+                .conversationId(conv.getId())
+                .build();
     }
 
     // --------- Helpers ---------
@@ -159,29 +208,21 @@ public class LearningClient {
         }
     }
 
-    /** JSON(요약/kpi/주차별 계획 등)을 읽어 사람이 보기 좋은 문장 리스트로 변환 */
     private List<String> extractLinesFromJson(String json) {
         if (json == null || json.isBlank()) return List.of();
-
         try {
             Map<String, Object> root = mapper.readValue(json, new TypeReference<>() {});
             List<String> out = new ArrayList<>();
 
-            // summary
             Object summary = root.get("summary");
-            if (summary instanceof String s && !s.isBlank()) {
-                out.add("요약: " + s.trim());
-            }
+            if (summary instanceof String s && !s.isBlank()) out.add("요약: " + s.trim());
 
-            // KPIs
             Object kpisObj = root.get("kpis");
             if (kpisObj instanceof List<?> kpis && !kpis.isEmpty()) {
-                String k = kpis.stream().map(Object::toString)
-                        .collect(Collectors.joining(", "));
+                String k = kpis.stream().map(Object::toString).collect(Collectors.joining(", "));
                 out.add("KPI: " + k);
             }
 
-            // plan (weeks)
             Object planObj = root.get("plan");
             if (planObj instanceof List<?> planList) {
                 for (Object w : planList) {
@@ -190,11 +231,9 @@ public class LearningClient {
 
                     Integer week = toInt(wm.get("week"));
                     String theme = Objects.toString(wm.get("theme"), "");
-
                     String objectives = joinList(wm.get("objectives"));
                     String topics = joinList(wm.get("topics"));
                     String exercises = joinList(wm.get("exercises"));
-
                     Integer hours = toInt(wm.get("estimatedHours"));
                     String difficulty = Objects.toString(wm.get("difficulty"), "");
 
@@ -206,12 +245,10 @@ public class LearningClient {
                     if (!exercises.isBlank()) sb.append(" | 과제: ").append(exercises);
                     if (hours != null) sb.append(" | 시간: ").append(hours).append("h");
                     if (!difficulty.isBlank()) sb.append(" | 난이도: ").append(difficulty);
-
                     out.add(sb.toString());
                 }
             }
 
-            // communication (optional)
             Object commObj = root.get("communication");
             if (commObj instanceof Map<?, ?> cm) {
                 String checkpoints = joinList(cm.get("checkpoints"));
@@ -219,7 +256,6 @@ public class LearningClient {
                 if (!checkpoints.isBlank()) out.add("체크포인트: " + checkpoints);
                 if (!demos.isBlank()) out.add("데모 아이디어: " + demos);
             }
-
             return out;
         } catch (Exception e) {
             return List.of();
@@ -230,20 +266,14 @@ public class LearningClient {
         if (o == null) return null;
         try {
             return (o instanceof Number n) ? n.intValue() : Integer.parseInt(o.toString());
-        } catch (Exception ignored) {
-            return null;
-        }
+        } catch (Exception ignored) { return null; }
     }
 
     @SuppressWarnings("unchecked")
     private static String joinList(Object obj) {
         if (obj instanceof List<?> list && !list.isEmpty()) {
-            return list.stream()
-                    .filter(Objects::nonNull)
-                    .map(Object::toString)
-                    .map(String::trim)
-                    .filter(s -> !s.isBlank())
-                    .collect(Collectors.joining(", "));
+            return list.stream().filter(Objects::nonNull).map(Object::toString)
+                    .map(String::trim).filter(s -> !s.isBlank()).collect(Collectors.joining(", "));
         }
         return "";
     }

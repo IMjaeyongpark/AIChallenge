@@ -40,7 +40,7 @@ src
 │  ├─ java/AIChallenge/AIChallenge
 │  │  ├─ controller/   AiRestController.java, ViewController.java
 │  │  ├─ service/      QuestionsService.java, LearningService.java
-│  │  ├─ client/       QuestionsClient.java, LearningClient.java
+│  │  ├─ client/       QuestionsClient.java, LearningClient.java, ConversationMemory.java
 │  │  ├─ util/         PromptLoader.java
 │  │  ├─ config/       PropertyConfig.java
 │  │  └─ DTO/          AiRequest.java, AiResponse.java

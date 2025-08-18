@@ -1,4 +1,3 @@
-// src/main/java/AIChallenge/AIChallenge/util/PromptLoader.java
 package AIChallenge.AIChallenge.util;
 
 import org.springframework.beans.factory.annotation.Value;
